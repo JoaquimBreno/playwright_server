@@ -20,15 +20,38 @@ if (!fs.existsSync(USER_DATA_DIR_BASE)) {
   fs.mkdirSync(USER_DATA_DIR_BASE, { recursive: true });
 }
 
-// Cleanup function
+// Cleanup function with better error handling and logging
 const cleanupUserDataDir = (dirPath) => {
   try {
+    if (!dirPath || typeof dirPath !== 'string') return;
+    
+    // Check if it's a user data directory to prevent accidental deletion
+    if (!dirPath.includes(USER_DATA_DIR_BASE)) return;
+    
     if (fs.existsSync(dirPath)) {
       fs.rmSync(dirPath, { recursive: true, force: true });
-      console.log(`Cleaned up user data directory: ${dirPath}`);
     }
   } catch (error) {
-    console.error(`Error cleaning up user data directory ${dirPath}:`, error);
+    // Silent error handling for cleanup
+  }
+};
+
+// Cleanup all user data directories
+const cleanupAllUserDataDirs = () => {
+  try {
+    if (fs.existsSync(USER_DATA_DIR_BASE)) {
+      const entries = fs.readdirSync(USER_DATA_DIR_BASE);
+      entries.forEach(entry => {
+        const fullPath = path.join(USER_DATA_DIR_BASE, entry);
+        cleanupUserDataDir(fullPath);
+      });
+      // Remove the base directory itself if empty
+      if (fs.readdirSync(USER_DATA_DIR_BASE).length === 0) {
+        fs.rmdirSync(USER_DATA_DIR_BASE);
+      }
+    }
+  } catch (error) {
+    // Silent error handling for cleanup
   }
 };
 
@@ -167,6 +190,9 @@ const sseSessions = new Map();
 
 // Handle SSE requests (following official pattern from transport.ts)
 async function handleSSE(req, res, urlObj) {
+  let userDataDir = '';
+  let connection = null;
+  
   if (req.method === 'POST') {
     const sessionId = urlObj.searchParams.get('sessionId');
     if (!sessionId) {
@@ -184,16 +210,14 @@ async function handleSSE(req, res, urlObj) {
   } else if (req.method === 'GET') {
     // Create unique user data directory for this session
     const sessionUuid = uuidv4();
-    const userDataDir = path.join(USER_DATA_DIR_BASE, sessionUuid);
+    userDataDir = path.join(USER_DATA_DIR_BASE, sessionUuid);
     
     // Ensure the directory exists
     fs.mkdirSync(userDataDir, { recursive: true });
 
     try {
-      console.log(`🚀 Creating enhanced MCP connection for SSE session: ${sessionUuid}`);
-
       // Create connection using official Playwright MCP with official pattern
-      const connection = await createConnection({
+      connection = await createConnection({
         browser: {
           browserName: 'chromium',
           userDataDir: userDataDir,
@@ -213,27 +237,19 @@ async function handleSSE(req, res, urlObj) {
       const transport = new EnhancedSSETransport('/sse', res);
       sseSessions.set(transport.sessionId, transport);
       
-      console.log(`✅ Created enhanced SSE session: ${transport.sessionId} (uuid: ${sessionUuid})`);
-      console.log('🔧 Features enabled: Advanced HTML detection, Intelligent conversion, Content processing');
-      
       // Connect the server to the transport
       await connection.server.connect(transport);
       
-      // Handle client disconnect
+      // Handle client disconnect and cleanup
       res.on('close', () => {
-        console.log(`👋 Client disconnected, cleaning up session: ${transport.sessionId} (uuid: ${sessionUuid})`);
         sseSessions.delete(transport.sessionId);
-        cleanupUserDataDir(userDataDir);
-        if (connection && connection.browser) {
-          connection.browser.close().catch(console.error);
+        if (connection?.browser) {
+          connection.browser.close().catch(() => {});
         }
+        cleanupUserDataDir(userDataDir);
       });
 
-      // Log successful connection
-      console.log(`🎉 Enhanced SSE connection established: ${transport.sessionId}`);
-      
     } catch (error) {
-      console.error('❌ SSE connection error:', error);
       cleanupUserDataDir(userDataDir);
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -396,15 +412,19 @@ const server = http.createServer(async (req, res) => {
 
 // Cleanup on shutdown
 process.on('SIGINT', () => {
-  console.log('Cleaning up user data directories...');
-  cleanupUserDataDir(USER_DATA_DIR_BASE);
+  cleanupAllUserDataDirs();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
-  console.log('Cleaning up user data directories...');
-  cleanupUserDataDir(USER_DATA_DIR_BASE);
+  cleanupAllUserDataDirs();
   process.exit(0);
+});
+
+// Additional cleanup on uncaught exceptions
+process.on('uncaughtException', (error) => {
+  cleanupAllUserDataDirs();
+  process.exit(1);
 });
 
 server.listen(port, host, () => {

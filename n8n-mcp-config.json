@@ -1,0 +1,28 @@
+{
+  "name": "Playwright Scraper",
+  "description": "Web scraping using Playwright with proxy support",
+  "command": "node",
+  "args": ["/Users/moises/Documents/playwright_server/mcp-server.js"],
+  "env": {},
+  "capabilities": {
+    "tools": true
+  },
+  "tools": [
+    {
+      "name": "scrape_page",
+      "description": "Scrape content from a web page using Playwright",
+      "parameters": {
+        "url": {
+          "type": "string",
+          "description": "The URL to scrape",
+          "required": true
+        },
+        "proxy": {
+          "type": "string", 
+          "description": "Optional proxy in format username:password@host:port",
+          "required": false
+        }
+      }
+    }
+  ]
+} 

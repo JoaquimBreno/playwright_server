@@ -1,0 +1,14 @@
+tunnel: playwright-mcp
+credentials-file: /Users/moises/.cloudflared/playwright-mcp.json
+
+ingress:
+  - hostname: auto
+    service: http://localhost:8932
+    originRequest:
+      noTLSVerify: true
+      connectTimeout: 30s
+    healthcheck:
+      enabled: true
+      path: /health
+      interval: 15s
+  - service: http_status:404 

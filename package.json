@@ -1,0 +1,28 @@
+{
+  "name": "playwright_server",
+  "version": "1.0.0",
+  "description": "Playwright MCP standalone server",
+  "type": "module",
+  "scripts": {
+    "start": "node official-mcp-server.js",
+    "start:original": "npx @playwright/mcp@latest --port 8931 --headless --host 0.0.0.0 --config=mcp-config.json",
+    "start:headed": "npx @playwright/mcp@latest --port 8931 --host 0.0.0.0",
+    "start:vision": "npx @playwright/mcp@latest --port 8931 --vision --headless --host 0.0.0.0",
+    "start:health": "node health-server.js",
+    "start:all": "npm run start & npm run start:health",
+    "test:google": "node test-google-scraping.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.4.0",
+    "@playwright/mcp": "^0.0.29",
+    "@playwright/test": "^1.42.1",
+    "eventsource": "^2.0.2",
+    "node-fetch": "^3.3.2",
+    "playwright": "^1.53.1",
+    "turndown": "^7.2.0",
+    "uuid": "^9.0.1"
+  }
+}

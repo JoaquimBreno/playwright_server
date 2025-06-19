@@ -111,7 +111,7 @@ const cleanupUserDataDir = (dirPath) => {
     
     // Check if it's a user data directory to prevent accidental deletion
     if (!dirPath.includes(USER_DATA_DIR_BASE)) return;
-    
+    console.log('Deleting user data directory:', dirPath);
     if (fs.existsSync(dirPath)) {
       fs.rmSync(dirPath, { recursive: true, force: true });
     }
@@ -310,12 +310,9 @@ async function createBrowser(useProxy = true) {
   const options = getSimpleLaunchOptions(useProxy);
   
   if (useProxy) {
-    // Use CDP connection for Bright Data's Scraping Browser
     return await chromium.connectOverCDP(options.wsEndpoint);
-  } else {
-    // Launch regular browser for non-proxy usage
-    return await chromium.launch(options);
   }
+  return await chromium.launch(options);
 }
 
 // Update the createConnection function usage
@@ -338,31 +335,25 @@ async function handleSSE(req, res, urlObj) {
 
     return await transport.handlePostMessage(req, res);
   } else if (req.method === 'GET') {
-    // Create unique user data directory for this session
     const sessionUuid = uuidv4();
     userDataDir = path.join(USER_DATA_DIR_BASE, sessionUuid);
-    
-    // Ensure the directory exists
     fs.mkdirSync(userDataDir, { recursive: true });
-
     try {
-      // Create browser instance using Bright Data's Scraping Browser
-      const browser = await createBrowser(true);
-      
-      // Create connection using the browser instance
+      // Create connection using official Playwright MCP with proxy
       connection = await createConnection({
-        browser: browser,
-        contextOptions: getSimpleContextOptions()
+        browser: {
+          browserName: 'chromium',
+          userDataDir: userDataDir,
+          launchOptions: getSimpleLaunchOptions(true),
+          contextOptions: getSimpleContextOptions()
+        }
       });
 
-      // Create enhanced SSE transport with advanced HTML processing
       const transport = new EnhancedSSETransport('/sse', res);
       sseSessions.set(transport.sessionId, transport);
       
-      // Connect the server to the transport
       await connection.server.connect(transport);
       
-      // Handle client disconnect and cleanup
       res.on('close', () => {
         sseSessions.delete(transport.sessionId);
         if (connection?.browser) {

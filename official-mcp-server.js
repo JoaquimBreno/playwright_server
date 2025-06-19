@@ -7,7 +7,8 @@ import url from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
-import TurndownService from 'turndown';
+import { convertHtmlToMarkdown } from 'dom-to-semantic-markdown';
+import { JSDOM } from 'jsdom';
 import { chromium } from 'playwright';
 
 const USER_DATA_DIR_BASE = './user-data-dirs';
@@ -31,324 +32,73 @@ const cleanupUserDataDir = (dirPath) => {
   }
 };
 
-// Configure enhanced Turndown service with advanced rules
-const turndownService = new TurndownService({
-  headingStyle: 'atx',
-  hr: '---',
-  bulletListMarker: '-',
-  codeBlockStyle: 'fenced',
-  fence: '```',
-  emDelimiter: '_',
-  strongDelimiter: '**',
-  linkStyle: 'inlined',
-  linkReferenceStyle: 'full',
-  preformattedCode: true
-});
+// Configure HTML to Markdown conversion options
+const markdownOptions = {
+  extractMainContent: true, // Extract main content only
+  refifyUrls: true, // Convert URLs to reference-style links to reduce tokens
+  enableTableColumnTracking: true, // Better table handling for LLMs
+  includeMetaData: 'extended', // Include metadata for context
+  debug: false
+};
 
-// Enhanced custom rules for better HTML processing
-turndownService.addRule('preserveImages', {
-  filter: 'img',
-  replacement: function (content, node) {
-    const alt = node.getAttribute('alt') || '';
-    const src = node.getAttribute('src') || '';
-    const title = node.getAttribute('title') || '';
-    const width = node.getAttribute('width');
-    const height = node.getAttribute('height');
-    
-    let result = `![${alt}](${src}${title ? ` "${title}"` : ''})`;
-    if (width || height) {
-      result += ` <!-- ${width ? `width: ${width}` : ''}${width && height ? ', ' : ''}${height ? `height: ${height}` : ''} -->`;
-    }
-    return result;
-  }
-});
-
-// Enhanced buttons and form elements
-turndownService.addRule('formElements', {
-  filter: ['button', 'input', 'textarea', 'select', 'option'],
-  replacement: function (content, node) {
-    const type = node.getAttribute('type') || '';
-    const value = node.getAttribute('value') || '';
-    const placeholder = node.getAttribute('placeholder') || '';
-    const name = node.getAttribute('name') || '';
-    const text = node.textContent || value || placeholder;
-    
-    switch (node.tagName.toLowerCase()) {
-      case 'button':
-        return text ? `**[${text}]**` : '**[Button]**';
-      case 'input':
-        if (type === 'submit' || type === 'button') {
-          return text ? `**[${text}]**` : '**[Button]**';
-        } else if (type === 'checkbox' || type === 'radio') {
-          return `☐ ${text || name || 'Option'}`;
-        } else {
-          return `_${placeholder || name || 'Input'}_`;
-        }
-      case 'textarea':
-        return `_${placeholder || name || 'Text Area'}_`;
-      case 'select':
-        return `▼ ${name || 'Dropdown'}`;
-      case 'option':
-        return `• ${text}`;
-      default:
-        return text ? `[${text}]` : '';
-    }
-  }
-});
-
-// Preserve important structural elements
-turndownService.addRule('structuralElements', {
-  filter: ['nav', 'aside', 'header', 'footer', 'section', 'article'],
-  replacement: function (content, node) {
-    const tagName = node.tagName.toLowerCase();
-    const className = node.getAttribute('class') || '';
-    const id = node.getAttribute('id') || '';
-    
-    let label = '';
-    switch (tagName) {
-      case 'nav': label = '🧭 Navigation'; break;
-      case 'aside': label = '📋 Sidebar'; break;
-      case 'header': label = '📄 Header'; break;
-      case 'footer': label = '📑 Footer'; break;
-      case 'section': label = '📝 Section'; break;
-      case 'article': label = '📰 Article'; break;
-    }
-    
-    const identifier = id ? ` (${id})` : className ? ` (${className})` : '';
-    return `\n\n### ${label}${identifier}\n\n${content}\n\n`;
-  }
-});
-
-// Handle tables better
-turndownService.addRule('enhancedTables', {
-  filter: 'table',
-  replacement: function (content, node) {
-    // Let Turndown handle basic table conversion, but add context
-    const caption = node.querySelector('caption');
-    const captionText = caption ? caption.textContent.trim() : '';
-    
-    return `${captionText ? `**${captionText}**\n\n` : ''}${content}`;
-  }
-});
-
-// Advanced HTML detection with more patterns
-function isHTML(text) {
-  if (typeof text !== 'string' || text.length < 10) return false;
-  
-  // Enhanced HTML detection patterns
-  const htmlPatterns = [
-    /<[a-zA-Z][^>]*>/g,        // HTML opening tags
-    /<\/[a-zA-Z][^>]*>/g,      // HTML closing tags
-    /&[a-zA-Z0-9#]+;/g,        // HTML entities
-    /<!DOCTYPE/i,              // DOCTYPE declaration
-    /<html[^>]*>/i,            // HTML root element
-    /<head[^>]*>/i,            // Head element
-    /<body[^>]*>/i,            // Body element
-  ];
-  
-  // Count HTML-like patterns
-  let htmlScore = 0;
-  const totalLength = text.length;
-  
-  htmlPatterns.forEach(pattern => {
-    const matches = text.match(pattern);
-    if (matches) {
-      htmlScore += matches.length;
-    }
-  });
-  
-  // More sophisticated detection
-  const hasStructuralHTML = /<(div|span|p|h[1-6]|ul|ol|li|table|tr|td|th)[^>]*>/i.test(text);
-  const hasHTMLEntities = /&[a-zA-Z0-9#]+;/.test(text);
-  const tagDensity = htmlScore / (totalLength / 100); // Tags per 100 characters
-  
-  // Decision logic
-  if (hasStructuralHTML || tagDensity > 1 || (htmlScore > 3 && hasHTMLEntities)) {
-    console.log(`🔍 HTML detected - Score: ${htmlScore}, Density: ${tagDensity.toFixed(2)}, Structural: ${hasStructuralHTML}, Entities: ${hasHTMLEntities}`);
-    return true;
-  }
-  
-  return false;
-}
-
-// Enhanced HTML to Markdown conversion with preprocessing
+// Function to convert HTML to semantic markdown optimized for LLMs
 function htmlToMarkdown(html) {
   try {
-    console.log(`🔄 Processing HTML content (${html.length} chars)...`);
-    
-    // Enhanced preprocessing
-    let processedHtml = html
-      // Remove scripts, styles, and comments
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-      .replace(/<!--[\s\S]*?-->/g, '')
-      // Convert common HTML entities
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&quot;/g, '"')
-      .replace(/&apos;/g, "'")
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      // Handle line breaks better
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/p>\s*<p[^>]*>/gi, '\n\n')
-      // Preserve pre-formatted content
-      .replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (match, content) => {
-        return `<pre>${content.replace(/\n/g, '\\n')}</pre>`;
-      });
-    
-    // Convert to markdown
-    const markdown = turndownService.turndown(processedHtml);
-    
-    // Enhanced post-processing
-    const cleanMarkdown = markdown
-      // Fix excessive whitespace
-      .replace(/\n{4,}/g, '\n\n\n')     // Max 3 consecutive newlines
-      .replace(/[ \t]+$/gm, '')         // Remove trailing spaces
-      .replace(/^\s+$/gm, '')           // Remove lines with only spaces
-      // Fix list formatting
-      .replace(/^(\s*)-\s*$/gm, '')     // Remove empty list items
-      .replace(/^(\s*)\*(\s+)/gm, '$1-$2') // Convert * to - for consistency
-      // Fix link formatting
-      .replace(/\[([^\]]+)\]\(\s*\)/g, '[$1]') // Remove empty links
-      .replace(/!\[([^\]]*)\]\(\s*\)/g, '') // Remove empty images
-      // Restore pre-formatted content
-      .replace(/<pre>([\s\S]*?)<\/pre>/gi, (match, content) => {
-        return '```\n' + content.replace(/\\n/g, '\n') + '\n```';
-      })
-      .trim();
-    
-    console.log(`✅ HTML→Markdown conversion completed: ${html.length} → ${cleanMarkdown.length} chars`);
-    
-    return cleanMarkdown;
-    
-  } catch (error) {
-    console.error('❌ Error converting HTML to Markdown:', error);
-    return html; // Return original if conversion fails
-  }
-}
-
-// Enhanced tool result processing with better context awareness
-function processToolResult(result) {
-  if (!result || !result.content) return result;
-  
-  try {
-    console.log('🔄 Processing tool result for HTML content...');
-    
-    // Process each content item with context
-    const processedContent = result.content.map((item, index) => {
-      if (item.type === 'text' && item.text) {
-        if (isHTML(item.text)) {
-          console.log(`🔍 Converting HTML content in item ${index + 1}...`);
-          const converted = htmlToMarkdown(item.text);
-          return {
-            ...item,
-            text: converted,
-            // Add metadata to track conversion
-            _converted: true,
-            _originalLength: item.text.length,
-            _convertedLength: converted.length
-          };
-        } else {
-          // Check for partial HTML content (mixed text with HTML elements)
-          const htmlSegments = item.text.match(/<[^>]+>[\s\S]*?<\/[^>]+>/g);
-          if (htmlSegments && htmlSegments.length > 0) {
-            console.log(`🔍 Converting partial HTML segments in item ${index + 1}...`);
-            let processedText = item.text;
-            htmlSegments.forEach(segment => {
-              if (isHTML(segment)) {
-                const converted = htmlToMarkdown(segment);
-                processedText = processedText.replace(segment, converted);
-              }
-            });
-            return {
-              ...item,
-              text: processedText,
-              _partialConversion: true
-            };
-          }
-        }
-      }
-      return item;
+    const dom = new JSDOM(html);
+    return convertHtmlToMarkdown(html, {
+      ...markdownOptions,
+      overrideDOMParser: dom.window.DOMParser
     });
-    
-    const conversionStats = processedContent.filter(item => item._converted || item._partialConversion);
-    if (conversionStats.length > 0) {
-      console.log(`✅ Processed ${conversionStats.length} items with HTML content`);
-    }
-    
-    return {
-      ...result,
-      content: processedContent
-    };
   } catch (error) {
-    console.error('❌ Error processing tool result:', error);
-    return result; // Return original if processing fails
+    return html;
   }
 }
 
-// Function to convert HTML to Markdown like crawl4ai (for scraping endpoint)
+// Function to format page content for LLMs
 async function formatPageContent(page) {
   try {
-    // Get the full HTML content
     const html = await page.content();
     return htmlToMarkdown(html);
-    
   } catch (error) {
-    console.error('Error in formatPageContent:', error);
-    
-    // Fallback: simple text extraction
+    // Fallback to simple text extraction
     try {
-      const simpleText = await page.evaluate(() => {
-        return document.body.textContent || document.documentElement.textContent || '';
-      });
-      return simpleText.replace(/\s+/g, ' ').trim();
+      return await page.evaluate(() => document.body.textContent || document.documentElement.textContent || '');
     } catch (e) {
       return 'Error extracting content';
     }
   }
 }
 
-// SSE sessions map (following official pattern)
-const sseSessions = new Map();
-
 // Enhanced SSE Transport with intelligent HTML processing
 class EnhancedSSETransport extends SSEServerTransport {
   constructor(endpoint, response) {
     super(endpoint, response);
     
-    // Ensure we have the original methods before binding
     if (typeof this.sendEvent === 'function') {
       const originalSendEvent = this.sendEvent.bind(this);
       
       this.sendEvent = (method, params) => {
         try {
-          console.log(`📡 SSE Event: ${method}`);
-          
-          // Process different types of MCP messages that might contain HTML
           if (params) {
-            // Tool call results
+            // Process tool call results
             if (params.result && params.result.content) {
-              console.log('🔄 Processing tool call result...');
               params.result = processToolResult(params.result);
             }
             
-            // Tool list responses
+            // Process tool list responses
             if (params.tools && Array.isArray(params.tools)) {
-              console.log('🔄 Processing tool list...');
               params.tools = params.tools.map(tool => {
-                if (tool.description && isHTML(tool.description)) {
+                if (tool.description) {
                   tool.description = htmlToMarkdown(tool.description);
                 }
                 return tool;
               });
             }
             
-            // Generic content processing for any message with content
+            // Process message content
             if (params.content && Array.isArray(params.content)) {
-              console.log('🔄 Processing message content...');
               params.content = params.content.map(item => {
-                if (item.type === 'text' && item.text && isHTML(item.text)) {
+                if (item.type === 'text' && item.text) {
                   return {
                     ...item,
                     text: htmlToMarkdown(item.text)
@@ -358,52 +108,62 @@ class EnhancedSSETransport extends SSEServerTransport {
               });
             }
             
-            // Error messages that might contain HTML
-            if (params.error && params.error.message && isHTML(params.error.message)) {
-              console.log('🔄 Processing error message...');
+            // Process error messages
+            if (params.error && params.error.message) {
               params.error.message = htmlToMarkdown(params.error.message);
             }
           }
           
           return originalSendEvent(method, params);
         } catch (error) {
-          console.error('❌ Error in enhanced sendEvent:', error);
           return originalSendEvent(method, params);
         }
       };
     }
     
-    // Only override send if it exists
     if (typeof this.send === 'function') {
       const originalSend = this.send.bind(this);
       
       this.send = (message) => {
         try {
-          // Process raw messages
           if (typeof message === 'object' && message.result && message.result.content) {
             message.result = processToolResult(message.result);
           }
           return originalSend(message);
         } catch (error) {
-          console.error('❌ Error in enhanced send:', error);
           return originalSend(message);
         }
       };
     }
-    
-    console.log('🔧 Enhanced SSE Transport initialized with advanced HTML→Markdown processing');
-  }
-  
-  // Add fallback methods if they don't exist in parent class
-  handlePostMessage(req, res) {
-    if (typeof super.handlePostMessage === 'function') {
-      return super.handlePostMessage(req, res);
-    }
-    console.warn('⚠️ handlePostMessage not implemented in parent class');
-    res.writeHead(501);
-    res.end('Not Implemented');
   }
 }
+
+// Process tool results with semantic markdown conversion
+function processToolResult(result) {
+  if (!result || !result.content) return result;
+  
+  try {
+    const processedContent = result.content.map(item => {
+      if (item.type === 'text' && item.text) {
+        return {
+          ...item,
+          text: htmlToMarkdown(item.text)
+        };
+      }
+      return item;
+    });
+    
+    return {
+      ...result,
+      content: processedContent
+    };
+  } catch (error) {
+    return result;
+  }
+}
+
+// SSE sessions map (following official pattern)
+const sseSessions = new Map();
 
 // Handle SSE requests (following official pattern from transport.ts)
 async function handleSSE(req, res, urlObj) {

@@ -54,7 +54,8 @@ const getSimpleLaunchOptions = (useProxy = true) => {
       '--disable-features=IsolateOrigins',
       '--disable-dev-shm-usage'
     ],
-    ignoreHTTPSErrors: true
+    ignoreHTTPSErrors: true,
+    timeout: 60000 
   };
 
   if (useProxy) {
@@ -111,48 +112,118 @@ const cleanupUserDataDir = (dirPath) => {
     
     // Check if it's a user data directory to prevent accidental deletion
     if (!dirPath.includes(USER_DATA_DIR_BASE)) return;
-    console.log('Deleting user data directory:', dirPath);
+    
+    console.log('Cleaning directory:', dirPath);
     if (fs.existsSync(dirPath)) {
+      // Primeiro remove todo o conteúdo recursivamente
       fs.rmSync(dirPath, { recursive: true, force: true });
+      console.log('Directory cleaned:', dirPath);
     }
   } catch (error) {
-    // Silent error handling for cleanup
+    console.error('Error cleaning directory:', dirPath, error);
   }
 };
 
 // Cleanup all user data directories
 const cleanupAllUserDataDirs = () => {
   try {
-    if (fs.existsSync(USER_DATA_DIR_BASE)) {
-      const entries = fs.readdirSync(USER_DATA_DIR_BASE);
-      entries.forEach(entry => {
-        const fullPath = path.join(USER_DATA_DIR_BASE, entry);
-        cleanupUserDataDir(fullPath);
-      });
-      // Remove the base directory itself if empty
-      if (fs.readdirSync(USER_DATA_DIR_BASE).length === 0) {
-        fs.rmdirSync(USER_DATA_DIR_BASE);
-      }
+    if (!fs.existsSync(USER_DATA_DIR_BASE)) return;
+
+    console.log('Starting cleanup of all user data directories...');
+    
+    // Lista todos os diretórios
+    const entries = fs.readdirSync(USER_DATA_DIR_BASE);
+    console.log(`Found ${entries.length} directories to clean`);
+
+    // Limpa cada diretório
+    entries.forEach(entry => {
+      const fullPath = path.join(USER_DATA_DIR_BASE, entry);
+      cleanupUserDataDir(fullPath);
+    });
+
+    // Remove o diretório base
+    try {
+      fs.rmSync(USER_DATA_DIR_BASE, { recursive: true, force: true });
+      console.log('Base directory removed:', USER_DATA_DIR_BASE);
+    } catch (error) {
+      console.error('Failed to remove base directory:', error);
     }
+
+    // Recria o diretório base vazio
+    fs.mkdirSync(USER_DATA_DIR_BASE, { recursive: true });
+    console.log('Clean base directory created');
+    
   } catch (error) {
-    // Silent error handling for cleanup
+    console.error('Error in cleanup process:', error);
+    // Tenta uma última vez remover tudo forçadamente
+    try {
+      fs.rmSync(USER_DATA_DIR_BASE, { recursive: true, force: true });
+      fs.mkdirSync(USER_DATA_DIR_BASE, { recursive: true });
+    } catch (e) {
+      console.error('Final cleanup attempt failed:', e);
+    }
   }
 };
 
 // Configure HTML to Markdown conversion options
 const markdownOptions = {
-  extractMainContent: true, // Extract main content only
-  refifyUrls: true, // Convert URLs to reference-style links to reduce tokens
-  enableTableColumnTracking: true, // Better table handling for LLMs
-  includeMetaData: 'extended', // Include metadata for context
+  extractMainContent: true,
+  refifyUrls: true,
+  enableTableColumnTracking: true,
+  includeMetaData: 'extended',
+  headingStyle: 'atx',
+  bulletListMarker: '-',
+  codeBlockStyle: 'fenced',
+  removeComments: true,
+  removeScript: true,
+  removeStyle: true,
   debug: false
 };
 
-// Function to convert HTML to semantic markdown optimized for LLMs
-function htmlToMarkdown(html) {
+// Function to clean HTML before markdown conversion
+function cleanHtml(html) {
   try {
     const dom = new JSDOM(html);
-    return convertHtmlToMarkdown(html, {
+    const doc = dom.window.document;
+
+    // Remove scripts, styles, and other non-content elements
+    const removeElements = ['script', 'style', 'iframe', 'noscript', 'meta', 'link'];
+    removeElements.forEach(tag => {
+      const elements = doc.getElementsByTagName(tag);
+      while (elements.length > 0) elements[0].remove();
+    });
+
+    // Remove hidden elements
+    doc.querySelectorAll('[style*="display: none"], [style*="visibility: hidden"], [hidden]').forEach(el => el.remove());
+
+    // Remove empty elements except for specific tags
+    const keepTags = ['p', 'div', 'span', 'br', 'hr'];
+    doc.querySelectorAll('*').forEach(el => {
+      if (!keepTags.includes(el.tagName.toLowerCase()) && !el.textContent.trim()) {
+        el.remove();
+      }
+    });
+
+    // Clean up attributes
+    doc.querySelectorAll('*').forEach(el => {
+      const keepAttrs = ['href', 'src', 'alt', 'title'];
+      Array.from(el.attributes).forEach(attr => {
+        if (!keepAttrs.includes(attr.name)) el.removeAttribute(attr.name);
+      });
+    });
+
+    return doc.body.innerHTML;
+  } catch (error) {
+    return html;
+  }
+}
+
+// Enhanced HTML to Markdown conversion
+function htmlToMarkdown(html) {
+  try {
+    const cleanedHtml = cleanHtml(html);
+    const dom = new JSDOM(cleanedHtml);
+    return convertHtmlToMarkdown(cleanedHtml, {
       ...markdownOptions,
       overrideDOMParser: dom.window.DOMParser
     });
@@ -209,7 +280,7 @@ async function formatPageContent(page) {
   }
 }
 
-// Enhanced SSE Transport with intelligent HTML processing
+// Enhanced SSE Transport with improved HTML processing
 class EnhancedSSETransport extends SSEServerTransport {
   constructor(endpoint, response) {
     super(endpoint, response);
@@ -220,65 +291,44 @@ class EnhancedSSETransport extends SSEServerTransport {
       this.sendEvent = (method, params) => {
         try {
           if (params) {
-            // Process tool call results
-            if (params.result && params.result.content) {
-              params.result = processToolResult(params.result);
-            }
-            
-            // Process tool list responses
-            if (params.tools && Array.isArray(params.tools)) {
-              params.tools = params.tools.map(tool => {
-                if (tool.description) {
-                  tool.description = htmlToMarkdown(tool.description);
-                }
-                return tool;
-              });
-            }
-            
-            // Process message content
-            if (params.content && Array.isArray(params.content)) {
-              params.content = params.content.map(item => {
-                if (item.type === 'text' && item.text) {
-                  return {
-                    ...item,
-                    text: htmlToMarkdown(item.text)
-                  };
-                }
-                return item;
-              });
-            }
-            
-            // Process error messages
-            if (params.error && params.error.message) {
-              params.error.message = htmlToMarkdown(params.error.message);
-            }
+            params = this.processParams(params);
           }
-          
           return originalSendEvent(method, params);
         } catch (error) {
           return originalSendEvent(method, params);
-        }
-      };
-    }
-    
-    if (typeof this.send === 'function') {
-      const originalSend = this.send.bind(this);
-      
-      this.send = (message) => {
-        try {
-          if (typeof message === 'object' && message.result && message.result.content) {
-            message.result = processToolResult(message.result);
-          }
-          return originalSend(message);
-        } catch (error) {
-          return originalSend(message);
         }
       };
     }
   }
+
+  // Process parameters recursively
+  processParams(params) {
+    if (!params) return params;
+
+    // Handle arrays
+    if (Array.isArray(params)) {
+      return params.map(item => this.processParams(item));
+    }
+
+    // Handle objects
+    if (typeof params === 'object') {
+      const processed = {};
+      for (const [key, value] of Object.entries(params)) {
+        processed[key] = this.processParams(value);
+      }
+      return processed;
+    }
+
+    // Handle HTML content
+    if (typeof params === 'string' && params.includes('<')) {
+      return htmlToMarkdown(params);
+    }
+
+    return params;
+  }
 }
 
-// Process tool results with semantic markdown conversion
+// Process tool results with enhanced markdown conversion
 function processToolResult(result) {
   if (!result || !result.content) return result;
   
@@ -288,6 +338,12 @@ function processToolResult(result) {
         return {
           ...item,
           text: htmlToMarkdown(item.text)
+        };
+      }
+      if (item.type === 'html') {
+        return {
+          type: 'text',
+          text: htmlToMarkdown(item.html || '')
         };
       }
       return item;
@@ -480,21 +536,40 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: 'Not found' }));
 });
 
-// Cleanup on shutdown
+// Ensure cleanup on process exit
 process.on('SIGINT', () => {
+  console.log('\nReceived SIGINT signal');
   cleanupAllUserDataDirs();
+  console.log('Cleanup complete, exiting...');
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
+  console.log('\nReceived SIGTERM signal');
   cleanupAllUserDataDirs();
+  console.log('Cleanup complete, exiting...');
   process.exit(0);
 });
 
 // Additional cleanup on uncaught exceptions
 process.on('uncaughtException', (error) => {
+  console.error('\nUncaught exception:', error);
   cleanupAllUserDataDirs();
+  console.log('Cleanup complete, exiting...');
   process.exit(1);
+});
+
+// Cleanup on process exit
+process.on('exit', () => {
+  console.log('\nProcess exiting, final cleanup...');
+  try {
+    // Última tentativa de limpeza síncrona
+    if (fs.existsSync(USER_DATA_DIR_BASE)) {
+      fs.rmSync(USER_DATA_DIR_BASE, { recursive: true, force: true });
+    }
+  } catch (error) {
+    console.error('Final cleanup error:', error);
+  }
 });
 
 server.listen(port, host, () => {

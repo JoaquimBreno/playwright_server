@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import 'dotenv/config';
 import { createConnection } from '@playwright/mcp';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import http from 'http';
@@ -22,9 +23,9 @@ const host = process.env.HOST || '0.0.0.0';
 
 // Bright Data Scraping Browser configuration
 const PROXY_CONFIG = {
-  wsEndpoint: 'wss://brd-customer-hl_928b621d-zone-scraping_browser1:vsm7l40v4j3j@brd.superproxy.io:9222',
-  username: 'brd-customer-hl_928b621d-zone-scraping_browser1',
-  password: 'vsm7l40v4j3j'
+  wsEndpoint: process.env.PROXY_WS_ENDPOINT || 'wss://brd-customer-hl_928b621d-zone-scraping_browser1:vsm7l40v4j3j@brd.superproxy.io:9222',
+  username: process.env.PROXY_USERNAME || 'brd-customer-hl_928b621d-zone-scraping_browser1',
+  password: process.env.PROXY_PASSWORD || 'vsm7l40v4j3j'
 };
 
 // Anti-detection configurations

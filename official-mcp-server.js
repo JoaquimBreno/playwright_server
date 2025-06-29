@@ -8,7 +8,7 @@ import url from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
-import { convertHtmlToMarkdown } from 'dom-to-semantic-markdown';
+import TurndownService from 'turndown';
 import { JSDOM } from 'jsdom';
 import { chromium } from 'playwright';
 import { fileURLToPath } from 'url';
@@ -23,9 +23,9 @@ const host = process.env.HOST || '0.0.0.0';
 
 // Bright Data Scraping Browser configuration
 const PROXY_CONFIG = {
-  wsEndpoint: process.env.PROXY_WS_ENDPOINT || 'wss://brd-customer-hl_928b621d-zone-scraping_browser1:vsm7l40v4j3j@brd.superproxy.io:9222',
-  username: process.env.PROXY_USERNAME || 'brd-customer-hl_928b621d-zone-scraping_browser1',
-  password: process.env.PROXY_PASSWORD || 'vsm7l40v4j3j'
+  wsEndpoint: process.env.PROXY_WS_ENDPOINT || 'wss://brd-customer-hl_928b621d-zone-scraping_browser2:baqsudiakf9l@brd.superproxy.io:9222',
+  username: process.env.PROXY_USERNAME || 'brd-customer-hl_928b621d-zone-scraping_browser2',
+  password: process.env.PROXY_PASSWORD || 'baqsudiakf9l'
 };
 
 // Anti-detection configurations
@@ -44,7 +44,39 @@ const USER_AGENTS = [
 
 const getRandomUserAgent = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 
-// Enhanced browser launch options
+// Enhanced context options for better site compatibility and anti-detection
+const getSimpleContextOptions = () => ({
+  viewport: { 
+    width: 1920 + Math.floor(Math.random() * 100), 
+    height: 1080 + Math.floor(Math.random() * 100) 
+  },
+  userAgent: getRandomUserAgent(),
+  locale: 'en-US',
+  timezoneId: 'America/New_York',
+  deviceScaleFactor: 1,
+  isMobile: false,
+  hasTouch: false,
+  javaScriptEnabled: true,
+  permissions: ['geolocation'],
+  geolocation: { latitude: 40.7128, longitude: -74.0060 }, // New York coordinates
+  colorScheme: 'light',
+  bypassCSP: true,
+  extraHTTPHeaders: {
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'DNT': '1',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Cache-Control': 'max-age=0'
+  }
+});
+
+// Enhanced browser launch options with additional stealth configurations
 const getSimpleLaunchOptions = (useProxy = true) => {
   const options = {
     headless: true,
@@ -53,31 +85,75 @@ const getSimpleLaunchOptions = (useProxy = true) => {
       '--disable-setuid-sandbox',
       '--disable-web-security',
       '--disable-features=IsolateOrigins',
-      '--disable-dev-shm-usage'
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--disable-gpu',
+      '--hide-scrollbars',
+      '--disable-notifications',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-breakpad',
+      '--disable-component-extensions-with-background-pages',
+      '--disable-extensions',
+      '--disable-features=TranslateUI',
+      '--disable-ipc-flooding-protection',
+      '--disable-renderer-backgrounding',
+      '--enable-features=NetworkService,NetworkServiceInProcess',
+      '--force-color-profile=srgb',
+      '--metrics-recording-only',
+      '--no-default-browser-check',
+      '--no-first-run',
+      '--password-store=basic',
+      '--use-mock-keychain',
+      '--window-size=1920,1080'
     ],
     ignoreHTTPSErrors: true,
-    timeout: 60000 
+    timeout: 60000,
+    ignoreDefaultArgs: ['--enable-automation', '--enable-blink-features=IdleDetection']
   };
 
   if (useProxy) {
+    console.log('🔌 Iniciando com proxy...');
     options.executablePath = undefined;
     options.wsEndpoint = PROXY_CONFIG.wsEndpoint;
+  } else {
+    console.log('⚠️ Iniciando sem proxy');
   }
 
   return options;
 };
 
-// Enhanced context options for better site compatibility
-const getSimpleContextOptions = () => ({
-  viewport: { width: 1920, height: 1080 },
-  userAgent: getRandomUserAgent(),
-  locale: 'en-US',
-  timezoneId: 'America/New_York',
-  javaScriptEnabled: true
-});
-
-// Simplified page setup
+// Enhanced page setup with stealth configurations
 const setupSimplePage = async (page) => {
+  // Inject anti-detection scripts
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    window.chrome = { runtime: {} };
+    
+    // Override permissions
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) => (
+      parameters.name === 'notifications' ?
+        Promise.resolve({ state: Notification.permission }) :
+        originalQuery(parameters)
+    );
+    
+    // Fake web GL
+    const getParameter = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function(parameter) {
+      if (parameter === 37445) {
+        return 'Intel Inc.';
+      }
+      if (parameter === 37446) {
+        return 'Intel Iris OpenGL Engine';
+      }
+      return getParameter.apply(this, [parameter]);
+    };
+  });
+
+  // Set custom headers per request
   await page.route('**/*', async (route) => {
     const request = route.request();
     const resourceType = request.resourceType();
@@ -88,13 +164,36 @@ const setupSimplePage = async (page) => {
       return;
     }
 
+    // Add random delay between requests to look more human-like
+    await page.waitForTimeout(Math.random() * 500);
+
     await route.continue({
       headers: {
         ...request.headers(),
         'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9'
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Sec-Ch-Ua': '"Chromium";v="112", "Google Chrome";v="112", "Not:A-Brand";v="99"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+        'Upgrade-Insecure-Requests': '1',
+        'User-Agent': getRandomUserAgent(),
+        'X-Requested-With': 'XMLHttpRequest'
       }
     });
+  });
+
+  // Add random mouse movements and scrolling to simulate human behavior
+  await page.evaluate(() => {
+    const randomScroll = () => {
+      const maxScroll = Math.max(
+        document.documentElement.scrollHeight - window.innerHeight,
+        0
+      );
+      const position = Math.random() * maxScroll;
+      window.scrollTo(0, position);
+    };
+    
+    setInterval(randomScroll, 5000 + Math.random() * 5000);
   });
 };
 
@@ -166,72 +265,16 @@ const cleanupAllUserDataDirs = () => {
   }
 };
 
-// Configure HTML to Markdown conversion options
-const markdownOptions = {
-  extractMainContent: true,
-  refifyUrls: true,
-  enableTableColumnTracking: true,
-  includeMetaData: 'extended',
+// Initialize Turndown with custom options
+const turndownService = new TurndownService({
   headingStyle: 'atx',
+  hr: '---',
   bulletListMarker: '-',
   codeBlockStyle: 'fenced',
-  removeComments: true,
-  removeScript: true,
-  removeStyle: true,
-  debug: false
-};
-
-// Function to clean HTML before markdown conversion
-function cleanHtml(html) {
-  try {
-    const dom = new JSDOM(html);
-    const doc = dom.window.document;
-
-    // Remove scripts, styles, and other non-content elements
-    const removeElements = ['script', 'style', 'iframe', 'noscript', 'meta', 'link'];
-    removeElements.forEach(tag => {
-      const elements = doc.getElementsByTagName(tag);
-      while (elements.length > 0) elements[0].remove();
-    });
-
-    // Remove hidden elements
-    doc.querySelectorAll('[style*="display: none"], [style*="visibility: hidden"], [hidden]').forEach(el => el.remove());
-
-    // Remove empty elements except for specific tags
-    const keepTags = ['p', 'div', 'span', 'br', 'hr'];
-    doc.querySelectorAll('*').forEach(el => {
-      if (!keepTags.includes(el.tagName.toLowerCase()) && !el.textContent.trim()) {
-        el.remove();
-      }
-    });
-
-    // Clean up attributes
-    doc.querySelectorAll('*').forEach(el => {
-      const keepAttrs = ['href', 'src', 'alt', 'title'];
-      Array.from(el.attributes).forEach(attr => {
-        if (!keepAttrs.includes(attr.name)) el.removeAttribute(attr.name);
-      });
-    });
-
-    return doc.body.innerHTML;
-  } catch (error) {
-    return html;
-  }
-}
-
-// Enhanced HTML to Markdown conversion
-function htmlToMarkdown(html) {
-  try {
-    const cleanedHtml = cleanHtml(html);
-    const dom = new JSDOM(cleanedHtml);
-    return convertHtmlToMarkdown(cleanedHtml, {
-      ...markdownOptions,
-      overrideDOMParser: dom.window.DOMParser
-    });
-  } catch (error) {
-    return html;
-  }
-}
+  emDelimiter: '_',
+  linkStyle: 'referenced',
+  linkReferenceStyle: 'collapsed'
+});
 
 // Function to retry navigation with optimized delays
 async function tryNavigateWithRetry(page, url, maxRetries = 2) {
@@ -256,28 +299,107 @@ async function tryNavigateWithRetry(page, url, maxRetries = 2) {
       return response;
     } catch (error) {
       if (attempt === maxRetries) throw error;
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(1000 * attempt); // Exponential backoff
     }
   }
 }
 
-// Enhanced scraping function
+// Enhanced scraping function with detailed logging
 async function scrapeWithRetry(page, targetUrl, maxRetries = 2) {
-  const response = await tryNavigateWithRetry(page, targetUrl, maxRetries);
-  await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
-  return response;
+  console.log(`�� Iniciando scraping: ${targetUrl}`);
+  console.log(`📡 Status: ${page.context()._options?.proxy ? 'Proxy Ativo' : 'Conexão Direta'}`);
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`\n🔄 Tentativa ${attempt} de ${maxRetries}`);
+      
+      await setupSimplePage(page);
+      console.log('✅ Página configurada');
+
+      console.log('🌐 Navegando...');
+      const response = await page.goto(targetUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: 15000
+      });
+
+      if (!response) {
+        throw new Error('Sem resposta do servidor');
+      }
+
+      const status = response.status();
+      console.log(`📊 Status: ${status}`);
+
+      return response;
+    } catch (error) {
+      console.error(`❌ Erro na tentativa ${attempt}`);
+      if (attempt === maxRetries) throw error;
+      console.log(`⏳ Aguardando próxima tentativa...`);
+      await page.waitForTimeout(1000 * attempt);
+    }
+  }
 }
 
 // Function to format page content
 async function formatPageContent(page) {
   try {
+    // Get the main content
     const content = await page.evaluate(() => {
-      const main = document.querySelector('main') || document.body;
-      return main.innerHTML;
+      // Remove unwanted elements that might add noise
+      const unwanted = [
+        'script',
+        'style',
+        'noscript',
+        'iframe',
+        'frame',
+        'object',
+        'embed',
+        'canvas',
+        'video',
+        'audio',
+        'svg',
+        '[aria-hidden="true"]',
+        '[style*="display: none"]',
+        '[hidden]'
+      ];
+      
+      unwanted.forEach(selector => {
+        document.querySelectorAll(selector).forEach(el => el.remove());
+      });
+
+      // Get the content
+      const mainContent = document.querySelector('main, article, [role="main"], #main, .main-content') || document.body;
+      return mainContent.innerHTML;
     });
-    return htmlToMarkdown(content);
+
+    // Convert HTML to Markdown
+    let markdown = turndownService.turndown(content);
+
+    // Clean up the markdown
+    markdown = markdown
+      // Remove excessive blank lines
+      .replace(/\n{3,}/g, '\n\n')
+      // Fix list items that might have been broken
+      .replace(/^\s*[-*+]\s*$/gm, '')
+      // Fix headers that might have extra spaces
+      .replace(/^(#{1,6})\s+/gm, '$1 ')
+      // Remove any remaining HTML comments
+      .replace(/<!--[\s\S]*?-->/g, '')
+      // Fix any broken links
+      .replace(/\[([^\]]*)\]\(\s*\)/g, '$1')
+      // Remove any remaining HTML entities
+      .replace(/&[a-z]+;/g, ' ')
+      // Fix multiple spaces
+      .replace(/\s+/g, ' ')
+      // Fix multiple newlines again
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+
+    return markdown;
   } catch (error) {
-    return await page.evaluate(() => document.body.textContent || '');
+    console.error('Error in formatPageContent:', error);
+    // Fallback to plain text
+    const plainText = await page.evaluate(() => document.body.textContent || '');
+    return plainText.trim().replace(/\s+/g, ' ');
   }
 }
 
@@ -322,7 +444,7 @@ class EnhancedSSETransport extends SSEServerTransport {
 
     // Handle HTML content
     if (typeof params === 'string' && params.includes('<')) {
-      return htmlToMarkdown(params);
+      return formatPageContent(params);
     }
 
     return params;
@@ -338,13 +460,13 @@ function processToolResult(result) {
       if (item.type === 'text' && item.text) {
         return {
           ...item,
-          text: htmlToMarkdown(item.text)
+          text: formatPageContent(item.text)
         };
       }
       if (item.type === 'html') {
         return {
           type: 'text',
-          text: htmlToMarkdown(item.html || '')
+          text: formatPageContent(item.html || '')
         };
       }
       return item;
@@ -362,17 +484,30 @@ function processToolResult(result) {
 // SSE sessions map (following official pattern)
 const sseSessions = new Map();
 
-// Function to create a browser instance
+// Function to create a browser instance with enhanced logging
 async function createBrowser(useProxy = true) {
-  const options = getSimpleLaunchOptions(useProxy);
-  
-  if (useProxy) {
-    return await chromium.connectOverCDP(options.wsEndpoint);
+  console.log('🌐 Iniciando browser...');
+  try {
+    const options = getSimpleLaunchOptions(useProxy);
+    
+    if (useProxy) {
+      console.log('🔄 Conectando ao browser remoto...');
+      const browser = await chromium.connectOverCDP(options.wsEndpoint);
+      console.log('✅ Conexão remota estabelecida');
+      return browser;
+    } else {
+      console.log('🔄 Iniciando browser local...');
+      const browser = await chromium.launch(options);
+      console.log('✅ Browser local iniciado');
+      return browser;
+    }
+  } catch (error) {
+    console.error('❌ Erro ao criar browser');
+    throw error;
   }
-  return await chromium.launch(options);
 }
 
-// Update the createConnection function usage
+// Update the handleSSE function with minimal logging
 async function handleSSE(req, res, urlObj) {
   let userDataDir = '';
   let connection = null;
@@ -392,11 +527,13 @@ async function handleSSE(req, res, urlObj) {
 
     return await transport.handlePostMessage(req, res);
   } else if (req.method === 'GET') {
+    console.log('\n🔄 Nova sessão iniciando...');
     const sessionUuid = uuidv4();
     userDataDir = path.join(USER_DATA_DIR_BASE, sessionUuid);
     fs.mkdirSync(userDataDir, { recursive: true });
+    
     try {
-      // Create connection using official Playwright MCP with proxy
+      console.log('🔌 Estabelecendo conexão...');
       connection = await createConnection({
         browser: {
           browserName: 'chromium',
@@ -405,26 +542,31 @@ async function handleSSE(req, res, urlObj) {
           contextOptions: getSimpleContextOptions()
         }
       });
+      console.log('✅ Conexão estabelecida');
 
       const transport = new EnhancedSSETransport('/sse', res);
       sseSessions.set(transport.sessionId, transport);
       
       await connection.server.connect(transport);
+      console.log('✅ Servidor conectado');
       
       res.on('close', () => {
+        console.log('\n🔚 Finalizando sessão...');
         sseSessions.delete(transport.sessionId);
         if (connection?.browser) {
           connection.browser.close().catch(() => {});
         }
         cleanupUserDataDir(userDataDir);
+        console.log('✅ Sessão finalizada');
       });
       
     } catch (error) {
+      console.error('❌ Erro na conexão');
       cleanupUserDataDir(userDataDir);
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
-          error: 'Failed to establish MCP connection', 
+          error: 'Failed to establish connection', 
           details: error.message 
         }));
       }
@@ -495,9 +637,30 @@ const server = http.createServer(async (req, res) => {
     try {
       const { url: targetUrl, useProxy = true } = JSON.parse(body);
       
-      if (!targetUrl) {
+      // Validate URL
+      if (!targetUrl || typeof targetUrl !== 'string') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing URL' }));
+        res.end(JSON.stringify({ 
+          success: false,
+          error: 'Missing or invalid URL. URL must be a non-empty string.',
+          timestamp: new Date().toISOString()
+        }, null, 2));
+        return;
+      }
+
+      // Try to parse and validate URL
+      try {
+        const urlObj = new URL(targetUrl);
+        if (!['http:', 'https:'].includes(urlObj.protocol)) {
+          throw new Error('Invalid URL protocol. Only HTTP and HTTPS are supported.');
+        }
+      } catch (urlError) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+          success: false,
+          error: `Invalid URL: ${urlError.message}`,
+          timestamp: new Date().toISOString()
+        }, null, 2));
         return;
       }
 
@@ -510,24 +673,54 @@ const server = http.createServer(async (req, res) => {
       const page = await context.newPage();
 
       const response = await scrapeWithRetry(page, targetUrl);
+      
+      // Get metadata
+      const metadata = await page.evaluate(() => {
+        const getMetaContent = (name) => {
+          const meta = document.querySelector(`meta[name="${name}"], meta[property="${name}"]`);
+          return meta ? meta.getAttribute('content') : null;
+        };
+        
+        return {
+          title: document.title,
+          description: getMetaContent('description') || getMetaContent('og:description'),
+          keywords: getMetaContent('keywords'),
+          author: getMetaContent('author') || getMetaContent('og:site_name'),
+          url: window.location.href,
+          lastModified: document.lastModified
+        };
+      });
+
       const content = await formatPageContent(page);
 
       await browser.close();
       cleanupUserDataDir(userDataDir);
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      const result = {
         success: true,
+        metadata,
         content,
-        timestamp: new Date().toISOString()
-      }));
+        format: 'markdown',
+        timestamp: new Date().toISOString(),
+        stats: {
+          contentLength: content.length,
+          approximateWordCount: content.split(/\s+/).length,
+          statusCode: response.status(),
+          headers: response.headers()
+        }
+      };
+      
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result, null, 2));
 
     } catch (error) {
+      console.error('Error in scrape endpoint:', error);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ 
         success: false,
-        error: error.message
-      }));
+        error: error.message,
+        timestamp: new Date().toISOString()
+      }, null, 2));
     }
     return;
   }

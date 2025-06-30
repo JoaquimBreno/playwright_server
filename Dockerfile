@@ -4,7 +4,7 @@ FROM node:20-slim
 # Set working directory
 WORKDIR /app
 
-# Install dependencies required for Playwright
+# Install dependencies required for Playwright and additional tools
 RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     libnss3 \
@@ -27,6 +27,11 @@ RUN apt-get update && apt-get install -y \
     libcairo2 \
     libasound2 \
     libatspi2.0-0 \
+    libgtk-3-0 \
+    libxtst6 \
+    xvfb \
+    fonts-liberation \
+    fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy package files
@@ -37,7 +42,7 @@ RUN npm cache clean --force && \
     npm install
 
 # Install Playwright browsers
-RUN npx playwright install chromium
+RUN npx playwright install chromium --with-deps
 
 # Copy the rest of the application
 COPY . .
@@ -50,7 +55,13 @@ RUN mkdir -p user-data-dirs screenshots && \
 EXPOSE 8931
 
 # Set NODE_ENV to production
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    HOST=0.0.0.0 \
+    PORT=8931
+
+# Add healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8931/health || exit 1
 
 # Command to run the application
 CMD ["npm", "run", "start"] 

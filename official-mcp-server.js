@@ -23,9 +23,9 @@ const host = process.env.HOST || '0.0.0.0';
 
 // Bright Data Scraping Browser configuration
 const PROXY_CONFIG = {
-  wsEndpoint: process.env.PROXY_WS_ENDPOINT || 'wss://brd-customer-hl_928b621d-zone-scraping_browser2:baqsudiakf9l@brd.superproxy.io:9222',
-  username: process.env.PROXY_USERNAME || 'brd-customer-hl_928b621d-zone-scraping_browser2',
-  password: process.env.PROXY_PASSWORD || 'baqsudiakf9l'
+  wsEndpoint: process.env.PROXY_WS_ENDPOINT ,
+  username: process.env.PROXY_USERNAME ,
+  password: process.env.PROXY_PASSWORD 
 };
 
 // Anti-detection configurations

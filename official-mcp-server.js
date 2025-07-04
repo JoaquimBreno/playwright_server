@@ -10,8 +10,9 @@ import path from 'path';
 import fs from 'fs';
 import TurndownService from 'turndown';
 import { JSDOM } from 'jsdom';
-import { chromium } from 'playwright';
+import { chromium, firefox, webkit } from 'playwright';
 import { fileURLToPath } from 'url';
+import { execSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -306,7 +307,7 @@ async function tryNavigateWithRetry(page, url, maxRetries = 2) {
 
 // Enhanced scraping function with detailed logging
 async function scrapeWithRetry(page, targetUrl, maxRetries = 2) {
-  console.log(`�� Iniciando scraping: ${targetUrl}`);
+  console.log(`🌐 Iniciando scraping: ${targetUrl}`);
   console.log(`📡 Status: ${page.context()._options?.proxy ? 'Proxy Ativo' : 'Conexão Direta'}`);
   
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -484,6 +485,29 @@ function processToolResult(result) {
 // SSE sessions map (following official pattern)
 const sseSessions = new Map();
 
+// Ensure browser is installed
+async function ensureBrowserInstalled() {
+  console.log('Checking available browsers...');
+  const browsers = [chromium, firefox, webkit];
+  const browserNames = ['chromium', 'firefox', 'webkit'];
+  
+  for (let i = 0; i < browsers.length; i++) {
+    try {
+      console.log(`Trying ${browserNames[i]}...`);
+      const browser = await browsers[i].launch(getSimpleLaunchOptions(false));
+      await browser.close();
+      console.log(`✅ ${browserNames[i]} is available!`);
+      global.defaultBrowser = browsers[i];
+      global.defaultBrowserName = browserNames[i];
+      return;
+    } catch (error) {
+      console.log(`❌ ${browserNames[i]} failed: ${error.message}`);
+    }
+  }
+  
+  throw new Error('No browsers available');
+}
+
 // Function to create a browser instance with enhanced logging
 async function createBrowser(useProxy = true) {
   console.log('🌐 Iniciando browser...');
@@ -492,17 +516,17 @@ async function createBrowser(useProxy = true) {
     
     if (useProxy) {
       console.log('🔄 Conectando ao browser remoto...');
-      const browser = await chromium.connectOverCDP(options.wsEndpoint);
+      const browser = await global.defaultBrowser.connectOverCDP(options.wsEndpoint);
       console.log('✅ Conexão remota estabelecida');
       return browser;
     } else {
       console.log('🔄 Iniciando browser local...');
-      const browser = await chromium.launch(options);
+      const browser = await global.defaultBrowser.launch(options);
       console.log('✅ Browser local iniciado');
       return browser;
     }
   } catch (error) {
-    console.error('❌ Erro ao criar browser');
+    console.error('❌ Erro ao criar browser:', error);
     throw error;
   }
 }
@@ -766,37 +790,43 @@ process.on('exit', () => {
   }
 });
 
-server.listen(port, host, () => {
-  const url = `http://${host}:${port}`;
-  console.log(`🚀 Enhanced Official Playwright MCP Server running at ${url}`);
-  console.log(`🏥 Health check: ${url}/health`);
-  
-  // Official message format (following transport.ts pattern)  
-  const message = [
-    `Listening on ${url}`,
-    'Put this in your client config:',
-    JSON.stringify({
-      'mcpServers': {
-        'playwright': {
-          'url': `${url}/sse`
+server.listen(port, host, async () => {
+  try {
+    await ensureBrowserInstalled();
+    const url = `http://${host}:${port}`;
+    console.log(`🚀 Enhanced Official Playwright MCP Server running at ${url}`);
+    console.log(`🏥 Health check: ${url}/health`);
+    
+    // Official message format (following transport.ts pattern)  
+    const message = [
+      `Listening on ${url}`,
+      'Put this in your client config:',
+      JSON.stringify({
+        'mcpServers': {
+          'playwright': {
+            'url': `${url}/sse`
+          }
         }
-      }
-    }, undefined, 2),
-    'Additional endpoints:',
-    `  Scraping: ${url}/scrape`
-  ].join('\n');
-  
-  console.log(message);
-  console.log('');
-  console.log('🎉 SERVIDOR MELHORADO COM PROXY E ANTI-DETECÇÃO:');
-  console.log('  ✅ Bright Data Scraping Browser integrado');
-  console.log('  ✅ User agents rotativos');
-  console.log('  ✅ Headers HTTP realistas');
-  console.log('  ✅ Viewport randomizado');
-  console.log('  ✅ Comportamento humano simulado');
-  console.log('  ✅ Anti-detecção avançada');
-  console.log('  ✅ Conversão HTML→Markdown otimizada para LLMs');
-  console.log('  ✅ Extração de conteúdo principal');
-  console.log('  ✅ Metadados estruturados');
-  console.log('  ✅ Redução de tokens');
+      }, undefined, 2),
+      'Additional endpoints:',
+      `  Scraping: ${url}/scrape`
+    ].join('\n');
+    
+    console.log(message);
+    console.log('');
+    console.log('🎉 SERVIDOR MELHORADO COM PROXY E ANTI-DETECÇÃO:');
+    console.log('  ✅ Bright Data Scraping Browser integrado');
+    console.log('  ✅ User agents rotativos');
+    console.log('  ✅ Headers HTTP realistas');
+    console.log('  ✅ Viewport randomizado');
+    console.log('  ✅ Comportamento humano simulado');
+    console.log('  ✅ Anti-detecção avançada');
+    console.log('  ✅ Conversão HTML→Markdown otimizada para LLMs');
+    console.log('  ✅ Extração de conteúdo principal');
+    console.log('  ✅ Metadados estruturados');
+    console.log('  ✅ Redução de tokens');
+  } catch (error) {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  }
 }); 

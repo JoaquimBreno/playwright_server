@@ -9,25 +9,47 @@ import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
 import TurndownService from 'turndown';
-import { JSDOM } from 'jsdom';
-import { chromium, firefox, webkit } from 'playwright';
+import { chromium } from 'playwright';
 import { fileURLToPath } from 'url';
-import { execSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Browser configuration optimized for Docker containers
 
 const USER_DATA_DIR_BASE = './user-data-dirs';
 const SCREENSHOTS_DIR = path.join(__dirname, 'screenshots');
 const port = process.env.PORT || 8931;
 const host = process.env.HOST || '0.0.0.0';
 
+// Global browser instance for performance
+let globalBrowser = null;
+const BROWSER_IDLE_TIMEOUT = 60000; // Close browser after 1 minute of inactivity
+let browserIdleTimer = null;
+
+// Performance optimizations
+const FAST_TIMEOUT = 10000; // Reduced from 30s to 10s
+const MAX_RETRIES = 1; // Reduced from 2 to 1
+
 // Bright Data Scraping Browser configuration
 const PROXY_CONFIG = {
-  wsEndpoint: process.env.PROXY_WS_ENDPOINT ,
-  username: process.env.PROXY_USERNAME ,
-  password: process.env.PROXY_PASSWORD 
+  wsEndpoint: process.env.PROXY_WS_ENDPOINT || '',
+  username: process.env.PROXY_USERNAME || '',
+  password: process.env.PROXY_PASSWORD || ''
 };
+
+// Validate proxy configuration
+function isProxyConfigured() {
+  const hasAllConfig = PROXY_CONFIG.wsEndpoint && PROXY_CONFIG.username && PROXY_CONFIG.password;
+  if (!hasAllConfig) {
+    console.log('⚠️ Configuração de proxy incompleta:');
+    if (!PROXY_CONFIG.wsEndpoint) console.log('  - PROXY_WS_ENDPOINT não configurado');
+    if (!PROXY_CONFIG.username) console.log('  - PROXY_USERNAME não configurado');
+    if (!PROXY_CONFIG.password) console.log('  - PROXY_PASSWORD não configurado');
+    return false;
+  }
+  return true;
+}
 
 // Anti-detection configurations
 const USER_AGENTS = [
@@ -45,156 +67,132 @@ const USER_AGENTS = [
 
 const getRandomUserAgent = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 
-// Enhanced context options for better site compatibility and anti-detection
+// Simplified context options optimized for Docker containers
 const getSimpleContextOptions = () => ({
   viewport: { 
-    width: 1920 + Math.floor(Math.random() * 100), 
-    height: 1080 + Math.floor(Math.random() * 100) 
+    width: 1920, 
+    height: 1080 
   },
-  userAgent: getRandomUserAgent(),
+  userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   locale: 'en-US',
-  timezoneId: 'America/New_York',
   deviceScaleFactor: 1,
   isMobile: false,
   hasTouch: false,
   javaScriptEnabled: true,
-  permissions: ['geolocation'],
-  geolocation: { latitude: 40.7128, longitude: -74.0060 }, // New York coordinates
-  colorScheme: 'light',
+  ignoreHTTPSErrors: true,
   bypassCSP: true,
   extraHTTPHeaders: {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'DNT': '1',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none',
-    'Sec-Fetch-User': '?1',
-    'Cache-Control': 'max-age=0'
+    'Accept-Language': 'en-US,en;q=0.9',
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   }
 });
 
-// Enhanced browser launch options with additional stealth configurations
+// Enhanced browser launch options optimized for Docker containers
 const getSimpleLaunchOptions = (useProxy = true) => {
   const options = {
     headless: true,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-web-security',
-      '--disable-features=IsolateOrigins',
       '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
+      '--disable-web-security',
+      '--disable-features=VizDisplayCompositor',
       '--disable-gpu',
-      '--hide-scrollbars',
-      '--disable-notifications',
+      '--single-process',
+      '--no-zygote',
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
-      '--disable-breakpad',
-      '--disable-component-extensions-with-background-pages',
-      '--disable-extensions',
-      '--disable-features=TranslateUI',
-      '--disable-ipc-flooding-protection',
       '--disable-renderer-backgrounding',
-      '--enable-features=NetworkService,NetworkServiceInProcess',
-      '--force-color-profile=srgb',
-      '--metrics-recording-only',
-      '--no-default-browser-check',
+      '--disable-features=TranslateUI',
+      '--disable-extensions',
+      '--disable-default-apps',
       '--no-first-run',
-      '--password-store=basic',
-      '--use-mock-keychain',
+      '--disable-component-extensions-with-background-pages',
+      '--disable-background-networking',
+      '--disable-sync',
+      '--metrics-recording-only',
       '--window-size=1920,1080'
     ],
     ignoreHTTPSErrors: true,
-    timeout: 60000,
+    timeout: FAST_TIMEOUT,
     ignoreDefaultArgs: ['--enable-automation', '--enable-blink-features=IdleDetection']
   };
 
-  if (useProxy) {
+  if (useProxy && isProxyConfigured()) {
     console.log('🔌 Iniciando com proxy...');
     options.executablePath = undefined;
     options.wsEndpoint = PROXY_CONFIG.wsEndpoint;
   } else {
-    console.log('⚠️ Iniciando sem proxy');
+    if (useProxy) {
+      console.log('⚠️ Iniciando sem proxy - usando Chromium embutido');
+    }
+    // Use built-in Chromium in Docker containers
+    options.executablePath = undefined;
   }
 
   return options;
 };
 
-// Enhanced page setup with stealth configurations
-const setupSimplePage = async (page) => {
-  // Inject anti-detection scripts
+// Global browser management for performance
+const getGlobalBrowser = async (useProxy = true) => {
+  if (globalBrowser && !globalBrowser.isConnected()) {
+    console.log('🔄 Browser desconectado, reiniciando...');
+    globalBrowser = null;
+  }
+  
+  if (!globalBrowser) {
+    console.log('🚀 Criando nova instância do browser...');
+    globalBrowser = await chromium.launch(getSimpleLaunchOptions(useProxy));
+    console.log('✅ Browser global criado');
+  }
+  
+  // Reset idle timer
+  if (browserIdleTimer) {
+    clearTimeout(browserIdleTimer);
+  }
+  
+  browserIdleTimer = setTimeout(async () => {
+    if (globalBrowser) {
+      console.log('⏰ Fechando browser por inatividade...');
+      await globalBrowser.close().catch(() => {});
+      globalBrowser = null;
+    }
+  }, BROWSER_IDLE_TIMEOUT);
+  
+  return globalBrowser;
+};
+
+const closeGlobalBrowser = async () => {
+  if (browserIdleTimer) {
+    clearTimeout(browserIdleTimer);
+    browserIdleTimer = null;
+  }
+  
+  if (globalBrowser) {
+    console.log('🔚 Fechando browser global...');
+    await globalBrowser.close().catch(() => {});
+    globalBrowser = null;
+  }
+};
+
+// Ultra-fast page setup for performance
+const setupFastPage = async (page) => {
+  // Minimal anti-detection
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-    window.chrome = { runtime: {} };
-    
-    // Override permissions
-    const originalQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) => (
-      parameters.name === 'notifications' ?
-        Promise.resolve({ state: Notification.permission }) :
-        originalQuery(parameters)
-    );
-    
-    // Fake web GL
-    const getParameter = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function(parameter) {
-      if (parameter === 37445) {
-        return 'Intel Inc.';
-      }
-      if (parameter === 37446) {
-        return 'Intel Iris OpenGL Engine';
-      }
-      return getParameter.apply(this, [parameter]);
-    };
   });
 
-  // Set custom headers per request
+  // Block only heavy resources for maximum speed
   await page.route('**/*', async (route) => {
-    const request = route.request();
-    const resourceType = request.resourceType();
+    const resourceType = route.request().resourceType();
     
-    // Block unnecessary resources for faster loading
-    if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
+    if (['image', 'media'].includes(resourceType)) {
       await route.abort();
       return;
     }
 
-    // Add random delay between requests to look more human-like
-    await page.waitForTimeout(Math.random() * 500);
-
-    await route.continue({
-      headers: {
-        ...request.headers(),
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Sec-Ch-Ua': '"Chromium";v="112", "Google Chrome";v="112", "Not:A-Brand";v="99"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
-        'Upgrade-Insecure-Requests': '1',
-        'User-Agent': getRandomUserAgent(),
-        'X-Requested-With': 'XMLHttpRequest'
-      }
-    });
-  });
-
-  // Add random mouse movements and scrolling to simulate human behavior
-  await page.evaluate(() => {
-    const randomScroll = () => {
-      const maxScroll = Math.max(
-        document.documentElement.scrollHeight - window.innerHeight,
-        0
-      );
-      const position = Math.random() * maxScroll;
-      window.scrollTo(0, position);
-    };
-    
-    setInterval(randomScroll, 5000 + Math.random() * 5000);
+    await route.continue();
   });
 };
 
@@ -277,130 +275,76 @@ const turndownService = new TurndownService({
   linkReferenceStyle: 'collapsed'
 });
 
-// Function to retry navigation with optimized delays
-async function tryNavigateWithRetry(page, url, maxRetries = 2) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      await setupSimplePage(page);
-
-      const response = await page.goto(url, {
-        waitUntil: 'domcontentloaded',
-        timeout: 15000
-      });
-
-      if (!response) {
-        throw new Error('No response received');
-      }
-
-      const status = response.status();
-      if (status !== 200) {
-        throw new Error(`HTTP ${status}`);
-      }
-
-      return response;
-    } catch (error) {
-      if (attempt === maxRetries) throw error;
-      await page.waitForTimeout(1000 * attempt); // Exponential backoff
-    }
-  }
-}
-
-// Enhanced scraping function with detailed logging
-async function scrapeWithRetry(page, targetUrl, maxRetries = 2) {
-  console.log(`🌐 Iniciando scraping: ${targetUrl}`);
-  console.log(`📡 Status: ${page.context()._options?.proxy ? 'Proxy Ativo' : 'Conexão Direta'}`);
+// Fast navigation with minimal retries
+async function fastNavigate(page, targetUrl) {
+  console.log(`🚀 Navegação rápida para: ${targetUrl}`);
   
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      console.log(`\n🔄 Tentativa ${attempt} de ${maxRetries}`);
-      
-      await setupSimplePage(page);
-      console.log('✅ Página configurada');
+  await setupFastPage(page);
+  
+  const response = await page.goto(targetUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: FAST_TIMEOUT
+  });
 
-      console.log('🌐 Navegando...');
-      const response = await page.goto(targetUrl, {
-        waitUntil: 'domcontentloaded',
-        timeout: 15000
-      });
+  if (!response) {
+    throw new Error('Sem resposta do servidor');
+  }
 
-      if (!response) {
-        throw new Error('Sem resposta do servidor');
-      }
+  const status = response.status();
+  console.log(`📊 Status: ${status}`);
 
-      const status = response.status();
-      console.log(`📊 Status: ${status}`);
+  if (status >= 400) {
+    throw new Error(`HTTP ${status}`);
+  }
 
-      return response;
-    } catch (error) {
-      console.error(`❌ Erro na tentativa ${attempt}`);
-      if (attempt === maxRetries) throw error;
-      console.log(`⏳ Aguardando próxima tentativa...`);
-      await page.waitForTimeout(1000 * attempt);
-    }
+  return response;
+}
+
+// Optimized scraping with retry only on failure
+async function scrapeWithMinimalRetry(page, targetUrl) {
+  try {
+    return await fastNavigate(page, targetUrl);
+  } catch (error) {
+    console.log(`⚠️ Primeira tentativa falhou, tentando novamente: ${error.message}`);
+    // One retry with fresh page
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: FAST_TIMEOUT });
+    return await fastNavigate(page, targetUrl);
   }
 }
 
-// Function to format page content
-async function formatPageContent(page) {
+// Fast content formatting with minimal processing
+async function fastFormatContent(page) {
   try {
-    // Get the main content
-    const content = await page.evaluate(() => {
-      // Remove unwanted elements that might add noise
-      const unwanted = [
-        'script',
-        'style',
-        'noscript',
-        'iframe',
-        'frame',
-        'object',
-        'embed',
-        'canvas',
-        'video',
-        'audio',
-        'svg',
-        '[aria-hidden="true"]',
-        '[style*="display: none"]',
-        '[hidden]'
-      ];
-      
-      unwanted.forEach(selector => {
-        document.querySelectorAll(selector).forEach(el => el.remove());
+    // Get clean text content directly
+    const { title, content, textLength } = await page.evaluate(() => {
+      // Quick cleanup of major noise
+      ['script', 'style', 'noscript'].forEach(tag => {
+        document.querySelectorAll(tag).forEach(el => el.remove());
       });
 
-      // Get the content
-      const mainContent = document.querySelector('main, article, [role="main"], #main, .main-content') || document.body;
-      return mainContent.innerHTML;
+      // Get main content area
+      const main = document.querySelector('main, article, [role="main"], #main, .main-content') || document.body;
+      
+      return {
+        title: document.title,
+        content: main.innerText || main.textContent || '',
+        textLength: (main.innerText || main.textContent || '').length
+      };
     });
 
-    // Convert HTML to Markdown
-    let markdown = turndownService.turndown(content);
-
-    // Clean up the markdown
-    markdown = markdown
-      // Remove excessive blank lines
-      .replace(/\n{3,}/g, '\n\n')
-      // Fix list items that might have been broken
-      .replace(/^\s*[-*+]\s*$/gm, '')
-      // Fix headers that might have extra spaces
-      .replace(/^(#{1,6})\s+/gm, '$1 ')
-      // Remove any remaining HTML comments
-      .replace(/<!--[\s\S]*?-->/g, '')
-      // Fix any broken links
-      .replace(/\[([^\]]*)\]\(\s*\)/g, '$1')
-      // Remove any remaining HTML entities
-      .replace(/&[a-z]+;/g, ' ')
-      // Fix multiple spaces
+    // Simple cleanup without heavy regex processing
+    const cleanContent = content
       .replace(/\s+/g, ' ')
-      // Fix multiple newlines again
       .replace(/\n{3,}/g, '\n\n')
       .trim();
 
-    return markdown;
+    // Skip markdown conversion for performance - return clean text
+    return cleanContent;
   } catch (error) {
-    console.error('Error in formatPageContent:', error);
-    // Fallback to plain text
-    const plainText = await page.evaluate(() => document.body.textContent || '');
-    return plainText.trim().replace(/\s+/g, ' ');
+    console.error('Error in fastFormatContent:', error);
+    // Ultra-fast fallback
+    const textContent = await page.evaluate(() => document.body.textContent || '');
+    return textContent.replace(/\s+/g, ' ').trim();
   }
 }
 
@@ -485,53 +429,59 @@ function processToolResult(result) {
 // SSE sessions map (following official pattern)
 const sseSessions = new Map();
 
-// Ensure browser is installed
-async function ensureBrowserInstalled() {
-  console.log('Checking available browsers...');
-  const browsers = [chromium, firefox, webkit];
-  const browserNames = ['chromium', 'firefox', 'webkit'];
-  
-  for (let i = 0; i < browsers.length; i++) {
-    try {
-      console.log(`Trying ${browserNames[i]}...`);
-      const browser = await browsers[i].launch(getSimpleLaunchOptions(false));
-      await browser.close();
-      console.log(`✅ ${browserNames[i]} is available!`);
-      global.defaultBrowser = browsers[i];
-      global.defaultBrowserName = browserNames[i];
-      return;
-    } catch (error) {
-      console.log(`❌ ${browserNames[i]} failed: ${error.message}`);
-    }
-  }
-  
-  throw new Error('No browsers available');
+// Function to get browser type for MCP
+function getMCPBrowserConfig() {
+  const useProxy = isProxyConfigured();
+  // For persistent context, we need to use a specific configuration
+  const persistentContextConfig = {
+    browserName: 'chromium', // Always use chromium for persistent context
+    userDataDir: path.join(USER_DATA_DIR_BASE, uuidv4()),
+    launchOptions: {
+      ...getSimpleLaunchOptions(useProxy),
+      // Use built-in Chromium for Docker containers
+      executablePath: undefined
+    },
+    contextOptions: getSimpleContextOptions()
+  };
+
+  return persistentContextConfig;
 }
 
-// Function to create a browser instance with enhanced logging
-async function createBrowser(useProxy = true) {
-  console.log('🌐 Iniciando browser...');
+// Ensure browser is installed
+async function ensureBrowserInstalled() {
+  console.log('Checking browser setup...');
+  
   try {
-    const options = getSimpleLaunchOptions(useProxy);
+    // Test browser launch with Docker-optimized settings
+    const browser = await chromium.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-web-security',
+        '--disable-features=VizDisplayCompositor',
+        '--disable-gpu',
+        '--single-process',
+        '--no-zygote'
+      ]
+    });
     
-    if (useProxy) {
-      console.log('🔄 Conectando ao browser remoto...');
-      const browser = await global.defaultBrowser.connectOverCDP(options.wsEndpoint);
-      console.log('✅ Conexão remota estabelecida');
-      return browser;
-    } else {
-      console.log('🔄 Iniciando browser local...');
-      const browser = await global.defaultBrowser.launch(options);
-      console.log('✅ Browser local iniciado');
-      return browser;
-    }
+    await browser.close();
+    console.log('✅ Browser setup successful with built-in Chromium!');
+    
+    // Store browser info globally
+    global.defaultBrowser = chromium;
+    global.defaultBrowserName = 'chromium';
+    
+    return;
   } catch (error) {
-    console.error('❌ Erro ao criar browser:', error);
+    console.error('❌ Browser setup failed:', error);
     throw error;
   }
 }
 
-// Update the handleSSE function with minimal logging
+// Update handleSSE function
 async function handleSSE(req, res, urlObj) {
   let userDataDir = '';
   let connection = null;
@@ -559,12 +509,7 @@ async function handleSSE(req, res, urlObj) {
     try {
       console.log('🔌 Estabelecendo conexão...');
       connection = await createConnection({
-        browser: {
-          browserName: 'chromium',
-          userDataDir: userDataDir,
-          launchOptions: getSimpleLaunchOptions(true),
-          contextOptions: getSimpleContextOptions()
-        }
+        browser: getMCPBrowserConfig()
       });
       console.log('✅ Conexão estabelecida');
 
@@ -585,7 +530,7 @@ async function handleSSE(req, res, urlObj) {
       });
       
     } catch (error) {
-      console.error('❌ Erro na conexão');
+      console.error('❌ Erro na conexão:', error);
       cleanupUserDataDir(userDataDir);
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -688,49 +633,71 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      console.time('scrape-total');
+      
+      // Use global browser for performance
+      const browser = await getGlobalBrowser(useProxy);
+      const context = await browser.newContext(getSimpleContextOptions());
+      
+      console.time('scrape-page-creation');
+      const page = await context.newPage();
+      console.timeEnd('scrape-page-creation');
+
+      console.time('scrape-navigation');
+      const response = await scrapeWithMinimalRetry(page, targetUrl);
+      console.timeEnd('scrape-navigation');
+      
+      console.time('scrape-content-extraction');
+      // Get metadata and content in parallel
+      const [metadata, content] = await Promise.all([
+        page.evaluate(() => {
+          const getMetaContent = (name) => {
+            const meta = document.querySelector(`meta[name="${name}"], meta[property="${name}"]`);
+            return meta ? meta.getAttribute('content') : null;
+          };
+          
+          return {
+            title: document.title,
+            description: getMetaContent('description') || getMetaContent('og:description'),
+            keywords: getMetaContent('keywords'),
+            author: getMetaContent('author') || getMetaContent('og:site_name'),
+            url: window.location.href,
+            lastModified: document.lastModified
+          };
+        }),
+        fastFormatContent(page)
+      ]);
+      console.timeEnd('scrape-content-extraction');
+
+      // Close context but keep browser alive
+      await context.close();
+      
+      // Async cleanup (non-blocking)
       const sessionId = uuidv4();
       const userDataDir = path.join(USER_DATA_DIR_BASE, sessionId);
-      fs.mkdirSync(userDataDir, { recursive: true });
-
-      const browser = await chromium.launch(getSimpleLaunchOptions(useProxy));
-      const context = await browser.newContext(getSimpleContextOptions());
-      const page = await context.newPage();
-
-      const response = await scrapeWithRetry(page, targetUrl);
-      
-      // Get metadata
-      const metadata = await page.evaluate(() => {
-        const getMetaContent = (name) => {
-          const meta = document.querySelector(`meta[name="${name}"], meta[property="${name}"]`);
-          return meta ? meta.getAttribute('content') : null;
-        };
-        
-        return {
-          title: document.title,
-          description: getMetaContent('description') || getMetaContent('og:description'),
-          keywords: getMetaContent('keywords'),
-          author: getMetaContent('author') || getMetaContent('og:site_name'),
-          url: window.location.href,
-          lastModified: document.lastModified
-        };
+      setImmediate(() => {
+        fs.mkdirSync(userDataDir, { recursive: true });
+        cleanupUserDataDir(userDataDir);
       });
 
-      const content = await formatPageContent(page);
-
-      await browser.close();
-      cleanupUserDataDir(userDataDir);
-
+      console.timeEnd('scrape-total');
+      
       const result = {
         success: true,
         metadata,
         content,
-        format: 'markdown',
+        format: 'text', // Changed from markdown for performance
         timestamp: new Date().toISOString(),
         stats: {
           contentLength: content.length,
           approximateWordCount: content.split(/\s+/).length,
           statusCode: response.status(),
           headers: response.headers()
+        },
+        performance: {
+          optimized: true,
+          browserReused: globalBrowser !== null,
+          fastMode: true
         }
       };
       
@@ -755,23 +722,26 @@ const server = http.createServer(async (req, res) => {
 });
 
 // Ensure cleanup on process exit
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   console.log('\nReceived SIGINT signal');
+  await closeGlobalBrowser();
   cleanupAllUserDataDirs();
   console.log('Cleanup complete, exiting...');
   process.exit(0);
 });
 
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   console.log('\nReceived SIGTERM signal');
+  await closeGlobalBrowser();
   cleanupAllUserDataDirs();
   console.log('Cleanup complete, exiting...');
   process.exit(0);
 });
 
 // Additional cleanup on uncaught exceptions
-process.on('uncaughtException', (error) => {
+process.on('uncaughtException', async (error) => {
   console.error('\nUncaught exception:', error);
+  await closeGlobalBrowser();
   cleanupAllUserDataDirs();
   console.log('Cleanup complete, exiting...');
   process.exit(1);

@@ -1,0 +1,59 @@
+{
+  "family": "playwright-server",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "containerDefinitions": [
+    {
+      "name": "playwright-server",
+      "image": "joaquimbreno/playwright-server-amd64:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8931,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "NODE_ENV",
+          "value": "production"
+        },
+        {
+          "name": "PORT",
+          "value": "8931"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "PROXY_WS_ENDPOINT",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/playwright/PROXY_WS_ENDPOINT"
+        },
+        {
+          "name": "PROXY_USERNAME",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/playwright/PROXY_USERNAME"
+        },
+        {
+          "name": "PROXY_PASSWORD",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/playwright/PROXY_PASSWORD"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/playwright-server",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8931/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ]
+} 

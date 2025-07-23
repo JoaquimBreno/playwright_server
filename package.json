@@ -20,13 +20,13 @@
     "@brightdata/mcp": "^2.2.1",
     "@modelcontextprotocol/sdk": "^0.4.0",
     "@playwright/mcp": "^0.0.29",
-    "@playwright/test": "^1.42.1",
+    "@playwright/test": "^1.54.0",
     "dom-to-semantic-markdown": "^1.5.0",
     "dotenv": "^16.4.5",
     "eventsource": "^2.0.2",
     "jsdom": "^26.1.0",
     "node-fetch": "^3.3.2",
-    "playwright": "^1.53.1",
+    "playwright": "^1.54.0",
     "turndown": "^7.2.0",
     "uuid": "^9.0.1"
   }

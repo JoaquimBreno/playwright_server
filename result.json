@@ -1,13 +1,5 @@
 {
-    "logGroups": [
-        {
-            "logGroupName": "/ecs/playwright-server",
-            "creationTime": 1753044039536,
-            "metricFilterCount": 0,
-            "arn": "arn:aws:logs:us-east-1:850995574672:log-group:/ecs/playwright-server:*",
-            "storedBytes": 708490,
-            "logGroupClass": "STANDARD",
-            "logGroupArn": "arn:aws:logs:us-east-1:850995574672:log-group:/ecs/playwright-server"
-        }
+    "taskArns": [
+        "arn:aws:ecs:us-east-2:850995574672:task/playwright-cluster/6dfc4766505644d1a2fad6ebc0e76a14"
     ]
 }

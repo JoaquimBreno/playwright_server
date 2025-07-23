@@ -24,12 +24,45 @@ const host = process.env.HOST || '0.0.0.0';
 
 // Global browser instance for performance
 let globalBrowser = null;
-const BROWSER_IDLE_TIMEOUT = 60000; // Close browser after 1 minute of inactivity
+const BROWSER_IDLE_TIMEOUT = 300000; // Close browser after 5 minutes of inactivity
 let browserIdleTimer = null;
 
 // Performance optimizations
 const FAST_TIMEOUT = 10000; // Reduced from 30s to 10s
 const MAX_RETRIES = 1; // Reduced from 2 to 1
+const BROWSER_LOCK_TIMEOUT = 30000; // 30 seconds lock timeout
+
+// Browser lock mechanism
+let browserLock = false;
+let browserLockTimeout = null;
+
+// Function to acquire browser lock
+const acquireBrowserLock = async () => {
+  const startTime = Date.now();
+  while (browserLock) {
+    if (Date.now() - startTime > BROWSER_LOCK_TIMEOUT) {
+      throw new Error('Failed to acquire browser lock - timeout');
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  browserLock = true;
+  if (browserLockTimeout) {
+    clearTimeout(browserLockTimeout);
+  }
+  browserLockTimeout = setTimeout(() => {
+    console.log('🔓 Forcing browser lock release due to timeout');
+    browserLock = false;
+  }, BROWSER_LOCK_TIMEOUT);
+};
+
+// Function to release browser lock
+const releaseBrowserLock = () => {
+  browserLock = false;
+  if (browserLockTimeout) {
+    clearTimeout(browserLockTimeout);
+    browserLockTimeout = null;
+  }
+};
 
 // Bright Data Scraping Browser configuration
 const PROXY_CONFIG = {
@@ -136,43 +169,59 @@ const getSimpleLaunchOptions = (useProxy = true) => {
 
 // Global browser management for performance
 const getGlobalBrowser = async (useProxy = true) => {
-  if (globalBrowser && !globalBrowser.isConnected()) {
-    console.log('🔄 Browser desconectado, reiniciando...');
-    globalBrowser = null;
-  }
-  
-  if (!globalBrowser) {
-    console.log('🚀 Criando nova instância do browser...');
-    globalBrowser = await chromium.launch(getSimpleLaunchOptions(useProxy));
-    console.log('✅ Browser global criado');
-  }
-  
-  // Reset idle timer
-  if (browserIdleTimer) {
-    clearTimeout(browserIdleTimer);
-  }
-  
-  browserIdleTimer = setTimeout(async () => {
+  try {
+    await acquireBrowserLock();
+    
     if (globalBrowser) {
-      console.log('⏰ Fechando browser por inatividade...');
-      await globalBrowser.close().catch(() => {});
-      globalBrowser = null;
+      try {
+        // Test if browser is still responsive
+        await globalBrowser.contexts();
+      } catch (error) {
+        console.log('🔄 Browser não responsivo, reiniciando...');
+        await closeGlobalBrowser();
+      }
     }
-  }, BROWSER_IDLE_TIMEOUT);
-  
-  return globalBrowser;
+    
+    if (!globalBrowser) {
+      console.log('🚀 Criando nova instância do browser...');
+      globalBrowser = await chromium.launch(getSimpleLaunchOptions(useProxy));
+      console.log('✅ Browser global criado');
+    }
+    
+    // Reset idle timer
+    if (browserIdleTimer) {
+      clearTimeout(browserIdleTimer);
+    }
+    
+    browserIdleTimer = setTimeout(async () => {
+      console.log('⏰ Fechando browser por inatividade...');
+      await closeGlobalBrowser();
+    }, BROWSER_IDLE_TIMEOUT);
+    
+    return globalBrowser;
+  } finally {
+    releaseBrowserLock();
+  }
 };
 
 const closeGlobalBrowser = async () => {
-  if (browserIdleTimer) {
-    clearTimeout(browserIdleTimer);
-    browserIdleTimer = null;
-  }
-  
-  if (globalBrowser) {
-    console.log('🔚 Fechando browser global...');
-    await globalBrowser.close().catch(() => {});
-    globalBrowser = null;
+  try {
+    await acquireBrowserLock();
+    
+    if (browserIdleTimer) {
+      clearTimeout(browserIdleTimer);
+      browserIdleTimer = null;
+    }
+    
+    if (globalBrowser) {
+      console.log('🔚 Fechando browser global...');
+      await globalBrowser.close().catch(error => {
+        console.log('Erro ao fechar browser:', error.message);
+      });
+      globalBrowser = null;
+    }
+  } finally {
+    releaseBrowserLock();
   }
 };
 
@@ -278,33 +327,33 @@ const turndownService = new TurndownService({
 // Fast navigation with minimal retries
 async function fastNavigate(page, targetUrl) {
   console.log(`🚀 Navegação rápida para: ${targetUrl}`);
-  
+      
   await setupFastPage(page);
   
-  const response = await page.goto(targetUrl, {
-    waitUntil: 'domcontentloaded',
+      const response = await page.goto(targetUrl, {
+        waitUntil: 'domcontentloaded',
     timeout: FAST_TIMEOUT
-  });
+      });
 
-  if (!response) {
-    throw new Error('Sem resposta do servidor');
-  }
+      if (!response) {
+        throw new Error('Sem resposta do servidor');
+      }
 
-  const status = response.status();
-  console.log(`📊 Status: ${status}`);
+      const status = response.status();
+      console.log(`📊 Status: ${status}`);
 
   if (status >= 400) {
     throw new Error(`HTTP ${status}`);
   }
 
-  return response;
+      return response;
 }
 
 // Optimized scraping with retry only on failure
 async function scrapeWithMinimalRetry(page, targetUrl) {
   try {
     return await fastNavigate(page, targetUrl);
-  } catch (error) {
+    } catch (error) {
     console.log(`⚠️ Primeira tentativa falhou, tentando novamente: ${error.message}`);
     // One retry with fresh page
     await page.reload({ waitUntil: 'domcontentloaded', timeout: FAST_TIMEOUT });
@@ -634,7 +683,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       console.time('scrape-total');
-      
+
       // Use global browser for performance
       const browser = await getGlobalBrowser(useProxy);
       const context = await browser.newContext(getSimpleContextOptions());
@@ -651,19 +700,19 @@ const server = http.createServer(async (req, res) => {
       // Get metadata and content in parallel
       const [metadata, content] = await Promise.all([
         page.evaluate(() => {
-          const getMetaContent = (name) => {
-            const meta = document.querySelector(`meta[name="${name}"], meta[property="${name}"]`);
-            return meta ? meta.getAttribute('content') : null;
-          };
-          
-          return {
-            title: document.title,
-            description: getMetaContent('description') || getMetaContent('og:description'),
-            keywords: getMetaContent('keywords'),
-            author: getMetaContent('author') || getMetaContent('og:site_name'),
-            url: window.location.href,
-            lastModified: document.lastModified
-          };
+        const getMetaContent = (name) => {
+          const meta = document.querySelector(`meta[name="${name}"], meta[property="${name}"]`);
+          return meta ? meta.getAttribute('content') : null;
+        };
+        
+        return {
+          title: document.title,
+          description: getMetaContent('description') || getMetaContent('og:description'),
+          keywords: getMetaContent('keywords'),
+          author: getMetaContent('author') || getMetaContent('og:site_name'),
+          url: window.location.href,
+          lastModified: document.lastModified
+        };
         }),
         fastFormatContent(page)
       ]);
@@ -677,11 +726,11 @@ const server = http.createServer(async (req, res) => {
       const userDataDir = path.join(USER_DATA_DIR_BASE, sessionId);
       setImmediate(() => {
         fs.mkdirSync(userDataDir, { recursive: true });
-        cleanupUserDataDir(userDataDir);
+      cleanupUserDataDir(userDataDir);
       });
 
       console.timeEnd('scrape-total');
-      
+
       const result = {
         success: true,
         metadata,
